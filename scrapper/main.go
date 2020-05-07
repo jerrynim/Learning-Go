@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -21,19 +23,68 @@ type extractedJob struct {
 var baseURL string = "https://kr.indeed.com/jobs?q=python&limit=50"
 
 func main() {
-	var jobs []extractedJob
+	var totalJobs []extractedJob
+	//? 모든 페이지의 jobs 를 모은 채널
+	channelForTotalJobs := make(chan []extractedJob)
+
 	totalPages := getPages()
-	fmt.Println(totalPages)
+
+	//* channelForTotalJobs 에 extractedJobs를 채운다.
 	for i := 0; i < totalPages; i++ {
-		extractedJobs := getPage(i)
-		jobs = append(jobs, extractedJobs...)
+		go getPage(i, channelForTotalJobs)
 	}
+
+	for i := 0; i < totalPages; i++ {
+		pagejobs := <-channelForTotalJobs
+		totalJobs = append(totalJobs, pagejobs...)
+	}
+	fmt.Println("Done, extracted", len(totalJobs))
+	writeJobs(totalJobs)
 }
 
-func getPage(page int) []extractedJob {
-	var jobs []extractedJob
+//* .csv파일에 extractedJobs[]를 저장
+func writeJobs(jobs []extractedJob) {
+	file, err := os.Create("jobs.csv")
+	checkErr(err)
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	headers := []string{"Link", "Title", "Location", "Salary", "Summary"}
+
+	wErr := writer.Write(headers)
+	checkErr(wErr)
+
+	var totalJobSlices []string
+
+	for _, job := range jobs {
+		jobSlice := []string{"https://kr.indeed.com/viewjob?jk=" + job.id, job.title, job.location, job.salary, job.summary}
+		totalJobSlices = append(totalJobSlices, jobSlice...)
+	}
+	jwErr := writer.Write(totalJobSlices)
+	checkErr(jwErr)
+
+	// channelForWrite := make(chan []string)
+
+	// for _, job := range jobs {
+	// 	go writeJob(writer, job, channelForWrite)
+	// }
+}
+
+func writeJob(writer *csv.Writer, job extractedJob, channelForWrite chan<- []string) {
+	jobSlice := []string{"https://kr.indeed.com/viewjob?jk=" + job.id, job.title, job.location, job.salary, job.summary}
+	jwErr := writer.Write(jobSlice)
+	checkErr(jwErr)
+}
+
+func getPage(page int, channelForTotalJobs chan<- []extractedJob) {
+	var pagejobs []extractedJob
+
+	//? 페이지의 job을 모으는 채널
+	channelForEachPage := make(chan extractedJob)
+
 	pageURL := baseURL + "&start=" + strconv.Itoa(page*50)
-	fmt.Println("Requesting", pageURL)
+
 	res, err := http.Get(pageURL)
 	checkErr(err)
 	checkCode(res)
@@ -46,21 +97,26 @@ func getPage(page int) []extractedJob {
 	searchCards := doc.Find(".jobsearch-SerpJobCard")
 
 	searchCards.Each(func(i int, card *goquery.Selection) {
-
-		job := extractJob(card)
-		jobs = append(jobs, job)
+		go extractJob(card, channelForEachPage)
 	})
-	return jobs
+	fmt.Println(page, searchCards.Length())
+
+	for i := 0; i < searchCards.Length(); i++ {
+		cardJobs := <-channelForEachPage
+		pagejobs = append(pagejobs, cardJobs)
+	}
+	channelForTotalJobs <- pagejobs
 }
 
-func extractJob(card *goquery.Selection) extractedJob {
+//* 채용 카드의 직업 정보를 추출
+func extractJob(card *goquery.Selection, channelForEachPage chan<- extractedJob) {
 	id, _ := card.Attr("data-jk")
 	title := cleanString(card.Find(".title>a").Text())
 	location := cleanString(card.Find(".sjcl").Text())
-	fmt.Println(id, title, location)
 	salary := cleanString(card.Find(".salaryText").Text())
 	summary := cleanString(card.Find(".summary").Text())
-	return extractedJob{
+
+	channelForEachPage <- extractedJob{
 		id:       id,
 		title:    title,
 		location: location,
@@ -68,8 +124,9 @@ func extractJob(card *goquery.Selection) extractedJob {
 		summary:  summary}
 }
 
+//* 조회할 페이지 갯수 검색
 func getPages() int {
-	pages := 0
+	pagesCount := 0
 	res, err := http.Get(baseURL)
 	checkErr(err)
 	checkCode(res)
@@ -80,10 +137,10 @@ func getPages() int {
 	checkErr(err)
 
 	doc.Find(".pagination").Each((func(i int, s *goquery.Selection) {
-		pages = s.Find("a").Length()
+		pagesCount = s.Find("a").Length()
 	}))
 
-	return pages
+	return pagesCount
 }
 
 func checkErr(err error) {
