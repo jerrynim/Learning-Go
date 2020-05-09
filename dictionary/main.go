@@ -20,4 +20,5 @@ func main() {
 	if addingError != nil {
 		fmt.Println(addingError)
 	}
+	dictionary.Delete("hello")
 }

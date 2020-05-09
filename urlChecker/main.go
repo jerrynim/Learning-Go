@@ -1,12 +1,9 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 )
-
-var errRequestFailed = errors.New("Request failed")
 
 func main() {
 	var results = make(map[string]string)
